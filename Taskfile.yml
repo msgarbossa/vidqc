@@ -1,0 +1,72 @@
+version: "3"
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build the vidqc binary for the current platform
+    cmds:
+      - go build -o vidqc .
+
+  build:local:
+    desc: >
+      Cross-compile for the two platforms you personally use (darwin/arm64,
+      linux/amd64) into dist/ -- a quick sanity build, not the full
+      4-platform release matrix (use release:snapshot for that).
+    cmds:
+      - mkdir -p dist
+      - GOOS=darwin GOARCH=arm64 go build -o dist/vidqc_darwin_arm64 .
+      - GOOS=linux GOARCH=amd64 go build -o dist/vidqc_linux_amd64 .
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - go test ./...
+
+  vet:
+    desc: go vet + gofmt check (must report nothing)
+    cmds:
+      - go vet ./...
+      - 'if [ -n "$(gofmt -l .)" ]; then echo "gofmt needs to be run on:"; gofmt -l .; exit 1; fi'
+
+  security:
+    desc: govulncheck + gosec (both via `go run`, no local install needed)
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # G204/G702 (subprocess/command-injection via variable) and G304/G703
+      # (file access via variable) are excluded: this is a CLI tool whose
+      # whole job is to operate on file paths the user passes on the
+      # command line, run under their own privileges -- not a service
+      # taking untrusted remote input. exec.Command is always called with
+      # an argument array (never a shell string), so there's no shell
+      # metacharacter injection risk regardless of what's in a path.
+      - go run github.com/securego/gosec/v2/cmd/gosec@latest -exclude=G204,G304,G702,G703 ./...
+
+  version:
+    desc: Print the version string a release build would embed
+    cmds:
+      - git describe --tags --always --dirty
+
+  tag:
+    desc: >
+      Create and push a semver git tag (task tag VERSION=v0.1.0).
+      This triggers the GitHub Actions release workflow -- run deliberately.
+    requires:
+      vars: [VERSION]
+    cmds:
+      - git tag -a {{.VERSION}} -m "{{.VERSION}}"
+      - git push origin {{.VERSION}}
+
+  release:snapshot:
+    desc: "Build all release platforms locally without publishing (needs: brew install goreleaser)"
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  release:
+    desc: "Publish the release for the current git tag -- normally run by CI on a tag push, not locally"
+    cmds:
+      - goreleaser release --clean

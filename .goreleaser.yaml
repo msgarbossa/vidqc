@@ -1,0 +1,38 @@
+version: 2
+project_name: vidqc
+
+builds:
+  - main: .
+    binary: vidqc
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64 # Intel Mac skipped -- Apple Silicon only
+      - goos: windows
+        goarch: arm64 # Windows: amd64 only
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: git
+
+release:
+  github:
+    owner: msgarbossa
+    name: vidqc
