@@ -3,6 +3,7 @@ package check
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -33,43 +34,92 @@ func Available() error {
 	return nil
 }
 
-func probeResolution(ctx context.Context, path string) (w, h int, err error) {
-	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height", "-of", "csv=p=0", path).Output()
-	if err != nil {
-		return 0, 0, fmt.Errorf("ffprobe resolution: %w", err)
-	}
-	parts := strings.Split(strings.TrimSpace(string(out)), ",")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("unexpected ffprobe resolution output: %q", out)
-	}
-	w, errW := strconv.Atoi(parts[0])
-	h, errH := strconv.Atoi(parts[1])
-	if errW != nil || errH != nil {
-		return 0, 0, fmt.Errorf("parsing ffprobe resolution output %q", out)
-	}
-	return w, h, nil
+// videoProbe is the first video stream's geometry and frame rate, as the
+// libvmaf pass will see it.
+type videoProbe struct {
+	w, h int
+	fps  float64
 }
 
-func probeFPS(ctx context.Context, path string) (float64, error) {
+// ffprobeVideo is the subset of `ffprobe -of json` probeVideo reads.
+type ffprobeVideo struct {
+	Streams []struct {
+		Width        int    `json:"width"`
+		Height       int    `json:"height"`
+		RFrameRate   string `json:"r_frame_rate"`
+		SideDataList []struct {
+			Rotation float64 `json:"rotation"`
+		} `json:"side_data_list"`
+		Tags struct {
+			Rotate string `json:"rotate"` // ffprobe < 5 reported rotation here
+		} `json:"tags"`
+	} `json:"streams"`
+}
+
+// probeVideo reads path's first video stream. JSON, not csv: a stream that
+// carries side data -- a phone video's display matrix, say -- makes the csv
+// writer append an empty field ("1920,1080,"), which a fixed-width parse
+// rejects. The dimensions are the displayed ones: ffmpeg autorotates both
+// inputs of the libvmaf pass, so a 90-degree-rotated 1920x1080 source
+// arrives as 1080x1920 and must be scaled to that, not squashed back.
+func probeVideo(ctx context.Context, path string) (videoProbe, error) {
 	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", path).Output()
+		"-show_entries", "stream=width,height,r_frame_rate:stream_side_data=rotation:stream_tags=rotate",
+		"-of", "json", path).Output()
 	if err != nil {
-		return 0, fmt.Errorf("ffprobe frame rate: %w", err)
+		return videoProbe{}, fmt.Errorf("ffprobe video stream: %w", err)
 	}
-	parts := strings.SplitN(strings.TrimSpace(string(out)), "/", 2)
-	num, errN := strconv.ParseFloat(parts[0], 64)
+	return parseVideoProbe(out)
+}
+
+func parseVideoProbe(out []byte) (videoProbe, error) {
+	var doc ffprobeVideo
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return videoProbe{}, fmt.Errorf("parsing ffprobe video stream output: %w", err)
+	}
+	if len(doc.Streams) == 0 {
+		return videoProbe{}, fmt.Errorf("ffprobe found no video stream")
+	}
+	s := doc.Streams[0]
+	if s.Width <= 0 || s.Height <= 0 {
+		return videoProbe{}, fmt.Errorf("unexpected ffprobe resolution %dx%d", s.Width, s.Height)
+	}
+	fps, err := parseFrameRate(s.RFrameRate)
+	if err != nil {
+		return videoProbe{}, err
+	}
+	rotation := 0.0
+	for _, sd := range s.SideDataList {
+		if sd.Rotation != 0 {
+			rotation = sd.Rotation
+			break
+		}
+	}
+	if rotation == 0 && s.Tags.Rotate != "" {
+		rotation, _ = strconv.ParseFloat(s.Tags.Rotate, 64)
+	}
+	w, h := s.Width, s.Height
+	if q := int(math.Round(rotation/90)) % 2; q != 0 {
+		w, h = h, w
+	}
+	return videoProbe{w: w, h: h, fps: fps}, nil
+}
+
+// parseFrameRate parses ffprobe's rational frame rate ("30000/1001", "25/1").
+func parseFrameRate(s string) (float64, error) {
+	num, den, found := strings.Cut(strings.TrimSpace(s), "/")
+	n, errN := strconv.ParseFloat(num, 64)
 	if errN != nil {
-		return 0, fmt.Errorf("parsing ffprobe frame rate output %q", out)
+		return 0, fmt.Errorf("parsing ffprobe frame rate %q", s)
 	}
-	if len(parts) == 1 {
-		return num, nil
+	if !found {
+		return n, nil
 	}
-	den, errD := strconv.ParseFloat(parts[1], 64)
-	if errD != nil || den == 0 {
-		return 0, fmt.Errorf("parsing ffprobe frame rate output %q", out)
+	d, errD := strconv.ParseFloat(den, 64)
+	if errD != nil || d == 0 {
+		return 0, fmt.Errorf("parsing ffprobe frame rate %q", s)
 	}
-	return num / den, nil
+	return n / d, nil
 }
 
 func probeDuration(ctx context.Context, path string) (float64, error) {

@@ -184,3 +184,61 @@ func TestRunCancel(t *testing.T) {
 		}
 	}
 }
+
+func TestParseVideoProbe(t *testing.T) {
+	const plain = `{"streams":[{"width":1920,"height":1080,"r_frame_rate":"30000/1001"}]}`
+	cases := []struct {
+		name, json string
+		w, h       int
+		wantErr    bool
+	}{
+		{"plain", plain, 1920, 1080, false},
+		{"rotated 90", `{"streams":[{"width":1920,"height":1080,"r_frame_rate":"25/1","side_data_list":[{"rotation":90}]}]}`, 1080, 1920, false},
+		{"rotated -90", `{"streams":[{"width":1920,"height":1080,"r_frame_rate":"25/1","side_data_list":[{"rotation":-90}]}]}`, 1080, 1920, false},
+		{"rotated 180", `{"streams":[{"width":1920,"height":1080,"r_frame_rate":"25/1","side_data_list":[{"rotation":-180}]}]}`, 1920, 1080, false},
+		{"old ffprobe rotate tag", `{"streams":[{"width":1920,"height":1080,"r_frame_rate":"25/1","tags":{"rotate":"270"}}]}`, 1080, 1920, false},
+		{"no video stream", `{"streams":[]}`, 0, 0, true},
+		{"no dimensions", `{"streams":[{"r_frame_rate":"25/1"}]}`, 0, 0, true},
+		{"bad frame rate", `{"streams":[{"width":1920,"height":1080,"r_frame_rate":"25/0"}]}`, 0, 0, true},
+	}
+	for _, c := range cases {
+		v, err := parseVideoProbe([]byte(c.json))
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
+			continue
+		}
+		if !c.wantErr && (v.w != c.w || v.h != c.h) {
+			t.Errorf("%s: %dx%d, want %dx%d", c.name, v.w, v.h, c.w, c.h)
+		}
+	}
+	if v, _ := parseVideoProbe([]byte(plain)); v.fps < 29.97 || v.fps > 29.98 {
+		t.Errorf("fps = %v, want 29.97", v.fps)
+	}
+}
+
+// A source carrying a display matrix -- every phone video shot sideways --
+// once failed before the pass began: ffprobe's csv writer appended an empty
+// side-data field ("1920,1080,") that the resolution parse rejected.
+func TestRunRotatedSource(t *testing.T) {
+	requireTools(t)
+	dir := t.TempDir()
+	plain, enc := makePair(t, dir, 3, "320x180")
+	src := filepath.Join(dir, "rotated.mp4")
+	rot := exec.Command("ffmpeg", "-v", "error", "-y", "-display_rotation", "90", "-i", plain, "-c", "copy", src)
+	if out, err := rot.CombinedOutput(); err != nil {
+		t.Skipf("this ffmpeg cannot write a display matrix: %v\n%s", err, out)
+	}
+	v, err := probeVideo(context.Background(), src)
+	if err != nil {
+		t.Fatalf("probeVideo: %v", err)
+	}
+	if v.w != 180 || v.h != 320 || v.fps != 25 {
+		t.Errorf("probeVideo = %+v, want 180x320 @ 25", v)
+	}
+	// The re-encode is unrotated 320x180, so it differs in shape; the point
+	// is that the pass runs at all rather than failing in the probe.
+	var out bytes.Buffer
+	if _, err := Run(context.Background(), Options{Source: src, Encoded: enc, Effort: encodequality.Quick}, &out); err != nil {
+		t.Fatalf("Run: %v\n%s", err, out.String())
+	}
+}

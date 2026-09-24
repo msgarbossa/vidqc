@@ -112,14 +112,11 @@ func run(ctx context.Context, opts Options, out io.Writer) (Report, error) {
 
 	c := newColors(opts.Color)
 
-	refW, refH, err := probeResolution(ctx, source)
+	video, err := probeVideo(ctx, source)
 	if err != nil {
 		return Report{}, err
 	}
-	fps, err := probeFPS(ctx, source)
-	if err != nil {
-		return Report{}, err
-	}
+	refW, refH, fps := video.w, video.h, video.fps
 
 	srcDur, err := probeDuration(ctx, source)
 	if err != nil {
