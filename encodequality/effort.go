@@ -47,3 +47,42 @@ func SubsampleFor(fps float64, e Effort) int {
 	}
 	return n
 }
+
+// Minimum sampled frames per effort level. The time-based intervals above
+// suit a feature-length file, where 1 sample/second is thousands of
+// samples; on a phone clip they leave a handful (an 18-second clip at
+// Medium scores 18 frames), too few for a percentile to mean anything or
+// for more than one problem area to surface. Sampling is densified until
+// the clip yields at least this many -- or every frame, whichever is fewer
+// -- which only ever affects clips shorter than about five minutes, so the
+// extra work is bounded by these counts rather than by the clip.
+const (
+	mediumMinSamples = 300
+	quickMinSamples  = 100
+)
+
+// SubsampleForClip is SubsampleFor with the minimum-sample floor above
+// applied for a clip of the given duration in seconds. A duration <= 0
+// (unknown) returns SubsampleFor unchanged.
+func SubsampleForClip(fps, duration float64, e Effort) int {
+	n := SubsampleFor(fps, e)
+	min := mediumMinSamples
+	switch e {
+	case Quick:
+		min = quickMinSamples
+	case Thorough:
+		return n
+	}
+	if duration <= 0 {
+		return n
+	}
+	frames := fps * duration
+	if frames/float64(n) >= float64(min) {
+		return n
+	}
+	dense := int(math.Floor(frames / float64(min)))
+	if dense < 1 {
+		dense = 1
+	}
+	return dense
+}

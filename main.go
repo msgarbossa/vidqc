@@ -35,6 +35,7 @@ type options struct {
 	threads       int
 	allowMismatch bool
 	top           int
+	lowest        int
 	noColor       bool
 	help          bool
 	showVersion   bool
@@ -53,6 +54,7 @@ func parseFlags(args []string) (opts options, positional []string, err error) {
 	fs.BoolVar(&opts.allowMismatch, "m", false, "")
 	fs.BoolVar(&opts.allowMismatch, "allow-length-mismatch", false, "")
 	fs.IntVar(&opts.top, "top", 3, "")
+	fs.IntVar(&opts.lowest, "lowest", encodequality.DefaultLowest, "")
 	fs.BoolVar(&opts.noColor, "no-color", false, "")
 	fs.BoolVar(&opts.help, "h", false, "")
 	fs.BoolVar(&opts.help, "help", false, "")
@@ -108,6 +110,7 @@ func run() error {
 		Subsample:           opts.subsample,
 		Threads:             opts.threads,
 		Top:                 opts.top,
+		Lowest:              lowestOption(opts.lowest),
 		WorkDir:             outDir,
 		AllowLengthMismatch: opts.allowMismatch,
 		Color:               !opts.noColor && os.Getenv("NO_COLOR") == "" && isTerminal(os.Stdout),
@@ -122,6 +125,15 @@ func run() error {
 	fmt.Printf("\nFull per-frame data: %s\n", rep.DataPath)
 	fmt.Println("(run with --help for what these numbers and colors mean)")
 	return nil
+}
+
+// lowestOption maps the CLI's --lowest (0 = list none) onto
+// check.Options.Lowest, whose zero value means the default instead.
+func lowestOption(n int) int {
+	if n <= 0 {
+		return -1
+	}
+	return n
 }
 
 func isTerminal(f *os.File) bool {

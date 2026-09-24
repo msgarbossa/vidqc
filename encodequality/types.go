@@ -13,12 +13,22 @@ type FrameMetric struct {
 	SSIM  float64 // float_ssim
 }
 
-// PooledStat mirrors libvmaf's own pooled_metrics block for one metric.
+// PooledStat is one metric's summary over the sampled frames. Mean, Min,
+// Max and HarmonicMean mirror libvmaf's own pooled_metrics block; the
+// spread fields below it are computed from the per-frame scores, because
+// libvmaf reports no spread at all -- and without one, a min far below the
+// mean cannot be told apart from a lone outlier and a generally uneven
+// encode.
 type PooledStat struct {
 	Mean         float64
 	Min          float64
 	Max          float64
 	HarmonicMean float64
+
+	StdDev float64 // population standard deviation
+	P1, P5 float64 // nearest-rank 1st/5th percentiles: the typical worst case, where Min is one frame
+	Median float64
+	N      int // sampled frames the stat is over
 }
 
 // Result is everything parsed out of one libvmaf JSON log.

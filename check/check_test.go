@@ -43,10 +43,11 @@ func sampleResult() encodequality.Result {
 // when asked to -- a server log must never see them.
 func TestPrintResultsWriterAndColor(t *testing.T) {
 	var plain, colored bytes.Buffer
-	printResults(&plain, newColors(false), sampleResult(), 3)
-	printResults(&colored, newColors(true), sampleResult(), 3)
+	printResults(&plain, newColors(false), sampleResult(), 3, 5)
+	printResults(&colored, newColors(true), sampleResult(), 3, 5)
 
-	for _, want := range []string{"=== Results ===", "VMAF  mean=", "=== Top 1 problem area(s) ===", "00:30 - "} {
+	for _, want := range []string{"=== Results (60 sampled frames) ===", "VMAF  mean=", "sd=", "p1=",
+		"=== Top 1 problem area(s) ===", "00:30 - ", "=== 5 lowest-scoring moment(s) ===", "1. 00:30 (frame 750)  VMAF 70.00"} {
 		if !strings.Contains(plain.String(), want) {
 			t.Errorf("plain report missing %q:\n%s", want, plain.String())
 		}
@@ -141,7 +142,7 @@ func TestRunWholeFile(t *testing.T) {
 		t.Errorf("per-frame data not written: %v", err)
 	}
 	s := out.String()
-	if !strings.HasPrefix(s, "Source:     "+src+"\n") || !strings.Contains(s, "=== Results ===") {
+	if !strings.HasPrefix(s, "Source:     "+src+"\n") || !strings.Contains(s, "=== Results (") {
 		t.Errorf("unexpected output:\n%s", s)
 	}
 	if strings.Contains(s, "Full per-frame data") || strings.Contains(s, "\033[") {
@@ -240,5 +241,70 @@ func TestRunRotatedSource(t *testing.T) {
 	var out bytes.Buffer
 	if _, err := Run(context.Background(), Options{Source: src, Encoded: enc, Effort: encodequality.Quick}, &out); err != nil {
 		t.Fatalf("Run: %v\n%s", err, out.String())
+	}
+}
+
+func TestPairByIndex(t *testing.T) {
+	cases := []struct {
+		src, enc int
+		want     bool
+	}{
+		{537, 537, true},
+		{537, 540, false}, // dropped/duplicated frames need timestamps
+		{0, 537, false},   // count not declared (Matroska)
+		{0, 0, false},
+	}
+	for _, c := range cases {
+		if got := pairByIndex(videoProbe{frames: c.src}, videoProbe{frames: c.enc}); got != c.want {
+			t.Errorf("pairByIndex(%d, %d) = %v, want %v", c.src, c.enc, got, c.want)
+		}
+	}
+	if got := frameDuration("30000/1001"); got != "1001/30000" {
+		t.Errorf("frameDuration = %q", got)
+	}
+	if got := frameDuration("25/1"); got != "1/25" {
+		t.Errorf("frameDuration = %q", got)
+	}
+	if got := frameDuration("0/0"); got != "1/1000" {
+		t.Errorf("frameDuration(0/0) = %q", got)
+	}
+}
+
+// A phone clip restamped by its encoder: the encode holds the same frames,
+// but a stretch of them carries timestamps a little earlier than the
+// source's. Paired by timestamp, libvmaf compared each of those with the
+// previous source frame, and VMAF collapsed there -- problem areas that
+// were not in the encode. Paired by frame, the stretch scores like the rest.
+func TestRunRestampedEncodePairsByFrame(t *testing.T) {
+	requireTools(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.mp4")
+	enc := filepath.Join(dir, "enc.mp4")
+	gen := exec.Command("ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+		"-i", "testsrc2=size=320x180:rate=25:duration=4",
+		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "12", "-pix_fmt", "yuv420p", src)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generating source: %v\n%s", err, out)
+	}
+	// Frames 25-49 stamped 0.6 of a frame early: still monotonic, same
+	// frame count, nothing dropped or duplicated.
+	restamp := exec.Command("ffmpeg", "-v", "error", "-y", "-i", src,
+		"-vf", "setpts='(N - if(between(N,25,49),0.6,0))/25/TB'", "-fps_mode", "passthrough",
+		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "12", enc)
+	if out, err := restamp.CombinedOutput(); err != nil {
+		t.Fatalf("generating encode: %v\n%s", err, out)
+	}
+
+	var out bytes.Buffer
+	rep, err := Run(context.Background(), Options{Source: src, Encoded: enc, Effort: encodequality.Thorough}, &out)
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Pairing:    frame by frame (100 frames in each)") {
+		t.Errorf("expected frame pairing:\n%s", out.String())
+	}
+	if rep.VMAF.Min < rep.VMAF.Mean-10 {
+		t.Errorf("VMAF min %.2f vs mean %.2f: the restamped stretch was compared out of step\n%s",
+			rep.VMAF.Min, rep.VMAF.Mean, out.String())
 	}
 }

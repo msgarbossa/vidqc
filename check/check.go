@@ -39,6 +39,11 @@ type Options struct {
 	// segment (the CLI's --top default is 3, not 0).
 	Top int
 
+	// Lowest is how many lowest-scoring moments to list after the problem
+	// areas; 0 means encodequality.DefaultLowest and a negative value
+	// lists none.
+	Lowest int
+
 	// WorkDir receives the per-frame libvmaf JSON (created if missing).
 	// Empty means a temporary directory that Run removes before returning,
 	// in which case Report.DataPath is empty too.
@@ -116,6 +121,10 @@ func run(ctx context.Context, opts Options, out io.Writer) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	encVideo, err := probeVideo(ctx, encoded)
+	if err != nil {
+		return Report{}, err
+	}
 	refW, refH, fps := video.w, video.h, video.fps
 
 	srcDur, err := probeDuration(ctx, source)
@@ -130,7 +139,7 @@ func run(ctx context.Context, opts Options, out io.Writer) (Report, error) {
 
 	subsample := opts.Subsample
 	if subsample <= 0 {
-		subsample = encodequality.SubsampleFor(fps, opts.Effort)
+		subsample = encodequality.SubsampleForClip(fps, srcDur, opts.Effort)
 	}
 	threads := opts.Threads
 	if threads <= 0 {
@@ -161,6 +170,12 @@ func run(ctx context.Context, opts Options, out io.Writer) (Report, error) {
 
 	switch {
 	case durDiff <= durationMismatchTolerance:
+		if pairByIndex(video, encVideo) {
+			pass.indexRate = video.rate
+			fmt.Fprintf(out, "Pairing:    frame by frame (%d frames in each)\n", video.frames)
+		} else {
+			fmt.Fprintf(out, "Pairing:    by timestamp (%s)\n", frameCounts(video.frames, encVideo.frames))
+		}
 		res, dataLocation, err = runWholeFileComparison(ctx, out, pass, fps, workDir)
 		if err != nil {
 			return Report{}, err
@@ -206,11 +221,40 @@ func run(ctx context.Context, opts Options, out io.Writer) (Report, error) {
 		dataLocation = fmt.Sprintf("%s/%s.segment*.vmaf.json", workDir, filepath.Base(encoded))
 	}
 
-	printResults(out, c, res, opts.Top)
+	lowest := opts.Lowest
+	if lowest == 0 {
+		lowest = encodequality.DefaultLowest
+	}
+	printResults(out, c, res, opts.Top, lowest)
 	if opts.WorkDir == "" {
 		dataLocation = ""
 	}
 	return Report{Result: res, DataPath: dataLocation}, nil
+}
+
+// pairByIndex decides how the whole-file pass pairs frames. libvmaf pairs
+// its two inputs by timestamp, which is right only when both files keep
+// the same clock -- and a re-encode often doesn't: a phone records at a
+// variable frame rate (mostly 33.3ms, with the odd 35ms frame), and an
+// encoder writing constant 29.97fps restamps every frame. Where the
+// restamped frame lands a hair before its original, libvmaf compares it
+// with the *previous* source frame until the clocks cross back, which on
+// motion reads as VMAF collapsing to single digits for a second at a time
+// -- a stretch of problem areas that are not in the encode at all.
+//
+// When both containers declare the same frame count, the encode is a
+// frame-for-frame re-encode and frame N is frame N, whatever its
+// timestamp says. Any other case (a count missing, or differing -- dropped
+// or duplicated frames) keeps timestamp pairing, which is what those need.
+func pairByIndex(src, enc videoProbe) bool {
+	return src.frames > 0 && src.frames == enc.frames
+}
+
+func frameCounts(src, enc int) string {
+	if src <= 0 || enc <= 0 {
+		return "frame counts not declared by the container"
+	}
+	return fmt.Sprintf("source has %d frames, encoded %d", src, enc)
 }
 
 // runWholeFileComparison runs a single libvmaf pass over the entirety of

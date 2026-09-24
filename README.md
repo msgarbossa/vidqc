@@ -46,8 +46,13 @@ Requires Go 1.25+. No other build-time dependencies (no CGO, no C toolchain).
 ```
 
 By default this samples ~1 frame/second (fast, still a solid statistical
-read); `--thorough` evaluates every frame instead. See `--help` for all
-options.
+read), densified on short clips to at least 300 samples; `--thorough`
+evaluates every frame instead. Each metric reports its mean plus spread
+(sd, median, p5/p1, min), followed by the flagged problem areas and the
+`--lowest` N lowest-scoring moments to spot-check. When both files declare
+the same frame count, frames are paired by position rather than timestamp,
+so a variable-frame-rate phone clip re-encoded to a constant rate compares
+like with like. See `--help` for all options.
 
 Source and encoded don't need to be frame-for-frame identical. If their
 durations differ, vidqc automatically falls back to content-based

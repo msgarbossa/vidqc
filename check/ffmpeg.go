@@ -39,6 +39,10 @@ func Available() error {
 type videoProbe struct {
 	w, h int
 	fps  float64
+	rate string // r_frame_rate as ffprobe wrote it ("30000/1001")
+	// frames is the container's declared frame count (nb_frames); 0 when
+	// the container doesn't declare one (Matroska, raw streams).
+	frames int
 }
 
 // ffprobeVideo is the subset of `ffprobe -of json` probeVideo reads.
@@ -47,6 +51,7 @@ type ffprobeVideo struct {
 		Width        int    `json:"width"`
 		Height       int    `json:"height"`
 		RFrameRate   string `json:"r_frame_rate"`
+		NbFrames     string `json:"nb_frames"`
 		SideDataList []struct {
 			Rotation float64 `json:"rotation"`
 		} `json:"side_data_list"`
@@ -64,7 +69,7 @@ type ffprobeVideo struct {
 // arrives as 1080x1920 and must be scaled to that, not squashed back.
 func probeVideo(ctx context.Context, path string) (videoProbe, error) {
 	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height,r_frame_rate:stream_side_data=rotation:stream_tags=rotate",
+		"-show_entries", "stream=width,height,r_frame_rate,nb_frames:stream_side_data=rotation:stream_tags=rotate",
 		"-of", "json", path).Output()
 	if err != nil {
 		return videoProbe{}, fmt.Errorf("ffprobe video stream: %w", err)
@@ -102,7 +107,26 @@ func parseVideoProbe(out []byte) (videoProbe, error) {
 	if q := int(math.Round(rotation/90)) % 2; q != 0 {
 		w, h = h, w
 	}
-	return videoProbe{w: w, h: h, fps: fps}, nil
+	frames, _ := strconv.Atoi(s.NbFrames)
+	return videoProbe{w: w, h: h, fps: fps, rate: strings.TrimSpace(s.RFrameRate), frames: frames}, nil
+}
+
+// frameDuration inverts an ffprobe rational frame rate into a time base
+// ("30000/1001" -> "1001/30000"), so that setpts=N stamps one frame per
+// tick. A rate that isn't a clean rational (never seen from ffprobe) falls
+// back to a millisecond base, which still gives both inputs the same clock.
+func frameDuration(rate string) string {
+	num, den, found := strings.Cut(rate, "/")
+	n, errN := strconv.Atoi(num)
+	d := 1
+	var errD error
+	if found {
+		d, errD = strconv.Atoi(den)
+	}
+	if errN != nil || errD != nil || n <= 0 || d <= 0 {
+		return "1/1000"
+	}
+	return fmt.Sprintf("%d/%d", d, n)
 }
 
 // parseFrameRate parses ffprobe's rational frame rate ("30000/1001", "25/1").
@@ -141,9 +165,14 @@ type vmafPass struct {
 	source, encoded    string
 	refW, refH         int
 	threads, subsample int
-	stdout, stderr     io.Writer // ffmpeg's -stats progress line is on stderr
-	encStart, encDur   float64
-	srcStart, srcDur   float64
+	// indexRate, when set, pairs the two inputs frame N with frame N rather
+	// than by timestamp: both are restamped as frame numbers in one shared
+	// time base (the source's frame duration, e.g. "1001/30000"). See
+	// pairByIndex.
+	indexRate        string
+	stdout, stderr   io.Writer // ffmpeg's -stats progress line is on stderr
+	encStart, encDur float64
+	srcStart, srcDur float64
 }
 
 // runVMAF execs ffmpeg to compute VMAF/PSNR/SSIM in one pass, writing the
@@ -153,11 +182,15 @@ type vmafPass struct {
 // content-based alignment. A duration <= 0 means "no trim" (the whole
 // file). Cancelling ctx kills ffmpeg.
 func runVMAF(ctx context.Context, p vmafPass, logPath string) error {
+	pts := "setpts=PTS-STARTPTS"
+	if p.indexRate != "" {
+		pts = "settb=" + frameDuration(p.indexRate) + ",setpts=N"
+	}
 	filter := fmt.Sprintf(
-		"[0:v]scale=%d:%d:flags=bicubic,setpts=PTS-STARTPTS[dist];"+
-			"[1:v]scale=%d:%d:flags=bicubic,setpts=PTS-STARTPTS[ref];"+
+		"[0:v]scale=%d:%d:flags=bicubic,%s[dist];"+
+			"[1:v]scale=%d:%d:flags=bicubic,%s[ref];"+
 			"[dist][ref]libvmaf=log_fmt=json:log_path=%s:feature=name=psnr|name=float_ssim:n_threads=%d:n_subsample=%d:shortest=1",
-		p.refW, p.refH, p.refW, p.refH, ffmpegEscape(logPath), p.threads, p.subsample,
+		p.refW, p.refH, pts, p.refW, p.refH, pts, ffmpegEscape(logPath), p.threads, p.subsample,
 	)
 
 	args := []string{"-hide_banner", "-loglevel", "warning", "-stats"}

@@ -52,6 +52,13 @@ Problem areas:
     - All three drop together -> a real, visible quality dip in that scene.
     - Only PSNR/SSIM drop, VMAF doesn't -> a pixel-level difference the
       perceptual model didn't consider significant; usually imperceptible.
+  Spread: each metric also reports sd (standard deviation), median, and
+  p5/p1 -- the score 5%/1% of sampled frames fall at or below. min is one
+  frame; p1/p5 are the typical worst case, so a min far below p1 is a lone
+  outlier, while a low p5 means the whole encode runs soft.
+  Lowest-scoring moments: the N lowest-VMAF samples (--lowest), at least
+  2s apart (wider on a long file), listed even when no problem area was
+  flagged -- places to spot-check on a clean or uniformly soft encode.
   Timestamps always refer to the ENCODED file's own timeline (the file
   you'd actually open to check a problem spot), even when alignment (below)
   had to map it to a different position in the source to compare it.
@@ -65,6 +72,19 @@ Sampling effort (mutually exclusive; --subsample overrides both):
   --thorough                    Every frame (subsample=1). Slower and much
                                 more memory-hungry; use for a final, rigorous
                                 check on a short clip, not a long file.
+  Short clips are sampled more densely than the preset says, so a phone
+  clip still yields enough frames for percentiles to mean something: at
+  least 300 samples (Medium) or 100 (Quick), or every frame if the clip
+  has fewer. Only clips under about five minutes are affected.
+
+Frame pairing:
+  When source and encoded declare the same frame count, frame N is compared
+  with frame N regardless of timestamps. A phone records at a variable
+  frame rate and an encoder usually restamps it to a constant one; pairing
+  by timestamp then compares frames with their neighbours wherever the two
+  clocks cross, which reads as VMAF collapsing for a second at a time. If
+  the counts differ (dropped/duplicated frames) or aren't declared, frames
+  are paired by timestamp. The header's "Pairing:" line says which.
 
 Content-based alignment:
   Source and encoded don't need to be frame-for-frame identical. If their
@@ -95,6 +115,10 @@ Options:
                                 silently desync every frame after it.
   --top N                       Number of problem areas to report (default
                                 3; 0 = report all flagged segments).
+  --lowest N                    Number of lowest-scoring moments to list
+                                after the problem areas, spaced apart
+                                (default 5; 0 = none). Listed whether or
+                                not anything was flagged.
   --no-color                    Disable colored output (also respects the
                                 NO_COLOR env var).
   -h, --help                    Show this help and exit.
