@@ -110,6 +110,35 @@ anchors := align.FindAnchors(encEnv, srcEnv, 0.2, 5.0, 4.0, 0.6)
 segments := align.ReconstructSegments(anchors, 2.0, 90.0, 10.0, 3)
 ```
 
+To run a whole check the way the CLI does -- the probes, the libvmaf pass,
+the alignment fallback and the printed report -- use the `check` package.
+The CLI is a thin wrapper over it, so a caller gets exactly the CLI's
+output, written to whatever `io.Writer` it passes:
+
+```go
+import "github.com/msgarbossa/vidqc/check"
+
+if err := check.Available(); err != nil { // ffmpeg, ffprobe, libvmaf
+	return err
+}
+rep, err := check.Run(ctx, check.Options{
+	Source:  source,
+	Encoded: encoded,
+	Effort:  encodequality.Quick, // or Medium (the zero value), Thorough
+	Top:     3,                   // 0 = every flagged segment
+	WorkDir: dir,                 // per-frame JSON; "" = a temp dir, removed after
+}, w)
+// rep.Result holds the scores; rep.DataPath the per-frame JSON (or glob).
+```
+
+Everything goes to `w` in the CLI's order, except the CLI's closing "Full
+per-frame data" line, which is left to the caller. Color is off unless
+`Options.Color` is set, and ffmpeg's own progress output is discarded
+unless `Options.Stderr` is set. Cancelling `ctx` kills the running ffmpeg
+and makes `Run` return `ctx.Err()`. `Run` does not check for the tools
+itself: call `Available` first (once, and cache it, if you run many
+checks).
+
 ## License
 
 MIT -- see [LICENSE](LICENSE).

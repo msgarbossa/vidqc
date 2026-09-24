@@ -1,7 +1,9 @@
-package main
+package check
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"math"
 	"path/filepath"
 	"sort"
@@ -57,15 +59,15 @@ func coverageColor(c colors, coverage float64) string {
 
 // attemptAlignment finds which spans of source and encoded correspond to
 // each other, from audio content alone, when their lengths don't match.
-func attemptAlignment(source, encoded string) ([]align.Segment, error) {
-	srcHasAudio, err := hasAudioStream(source)
+func attemptAlignment(ctx context.Context, source, encoded string) ([]align.Segment, error) {
+	srcHasAudio, err := hasAudioStream(ctx, source)
 	if err != nil {
 		return nil, err
 	}
 	if !srcHasAudio {
 		return nil, fmt.Errorf("source has no audio track -- content-based alignment needs audio in both files")
 	}
-	encHasAudio, err := hasAudioStream(encoded)
+	encHasAudio, err := hasAudioStream(ctx, encoded)
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +75,11 @@ func attemptAlignment(source, encoded string) ([]align.Segment, error) {
 		return nil, fmt.Errorf("encoded has no audio track -- content-based alignment needs audio in both files")
 	}
 
-	srcSamples, err := extractPCM(source)
+	srcSamples, err := extractPCM(ctx, source)
 	if err != nil {
 		return nil, err
 	}
-	encSamples, err := extractPCM(encoded)
+	encSamples, err := extractPCM(ctx, encoded)
 	if err != nil {
 		return nil, err
 	}
@@ -127,21 +129,21 @@ func alignedCoverage(segments []align.Segment, totalEncDur float64) float64 {
 // encoded file (not relative to that segment's own trimmed clip) -- so
 // reported problem-area timestamps always refer to the encoded file a
 // viewer would actually open.
-func runAlignedComparison(source, encoded string, refW, refH, threads, subsample int, fps float64,
-	outDir string, segments []align.Segment) (encodequality.Result, error) {
-	base := filepath.Base(encoded)
+func runAlignedComparison(ctx context.Context, out io.Writer, p vmafPass, fps float64,
+	workDir string, segments []align.Segment) (encodequality.Result, error) {
+	base := filepath.Base(p.encoded)
 	var allFrames []encodequality.FrameMetric
 
 	for i, seg := range segments {
 		dur := seg.EncEnd - seg.EncStart
-		fmt.Printf("Segment %d/%d: encoded [%s-%s] <-> source [%s-%s] (%.0fs)\n",
+		fmt.Fprintf(out, "Segment %d/%d: encoded [%s-%s] <-> source [%s-%s] (%.0fs)\n",
 			i+1, len(segments), formatTime(seg.EncStart), formatTime(seg.EncEnd),
 			formatTime(seg.SrcStart), formatTime(seg.SrcEnd), dur)
 
-		logPath := filepath.Join(outDir, fmt.Sprintf("%s.segment%d.vmaf.json", base, i+1))
-		err := runVMAFTrimmed(source, encoded, refW, refH, threads, subsample, logPath,
-			seg.EncStart, dur, seg.SrcStart, dur)
-		if err != nil {
+		logPath := filepath.Join(workDir, fmt.Sprintf("%s.segment%d.vmaf.json", base, i+1))
+		sp := p
+		sp.encStart, sp.encDur, sp.srcStart, sp.srcDur = seg.EncStart, dur, seg.SrcStart, dur
+		if err := runVMAF(ctx, sp, logPath); err != nil {
 			if wasOOMKilled(err) {
 				return encodequality.Result{}, fmt.Errorf("ffmpeg was killed (out of memory) on segment %d/%d", i+1, len(segments))
 			}

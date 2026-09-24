@@ -1,8 +1,8 @@
-package main
+package check
 
 import (
 	"fmt"
-	"os"
+	"io"
 
 	"github.com/msgarbossa/vidqc/encodequality"
 )
@@ -11,8 +11,11 @@ type colors struct {
 	red, yellow, green, reset string
 }
 
+// newColors returns ANSI escapes when enabled, empty strings otherwise.
+// Whether color suits the destination (a terminal, NO_COLOR unset) is the
+// caller's call, made once into Options.Color.
 func newColors(enabled bool) colors {
-	if !enabled || os.Getenv("NO_COLOR") != "" || !isTerminal(os.Stdout) {
+	if !enabled {
 		return colors{}
 	}
 	return colors{
@@ -21,14 +24,6 @@ func newColors(enabled bool) colors {
 		green:  "\033[32;1m",
 		reset:  "\033[0m",
 	}
-}
-
-func isTerminal(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 func (c colors) verdictColor(v encodequality.Verdict) string {
@@ -52,46 +47,46 @@ func formatTime(seconds float64) string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
-func printResults(c colors, res encodequality.Result, top int) {
+func printResults(out io.Writer, c colors, res encodequality.Result, top int) {
 	vmafV := encodequality.VMAFVerdict(res.VMAF.Mean, res.VMAF.Min)
 	psnrV := encodequality.PSNRVerdict(res.PSNR.Mean)
 	ssimV := encodequality.SSIMVerdict(res.SSIM.Mean)
 
-	fmt.Println()
-	fmt.Println("=== Results ===")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "=== Results ===")
 
-	fmt.Printf("VMAF  mean=%.2f  min=%.2f  harmonic_mean=%.2f  %s[%s]%s  %s\n",
+	fmt.Fprintf(out, "VMAF  mean=%.2f  min=%.2f  harmonic_mean=%.2f  %s[%s]%s  %s\n",
 		res.VMAF.Mean, res.VMAF.Min, res.VMAF.HarmonicMean,
 		c.verdictColor(vmafV.Verdict), vmafV.Verdict, c.reset, vmafV.Meaning)
 
-	fmt.Printf("PSNR  mean=%.2f dB  min=%.2f dB  %s[%s]%s  %s\n",
+	fmt.Fprintf(out, "PSNR  mean=%.2f dB  min=%.2f dB  %s[%s]%s  %s\n",
 		res.PSNR.Mean, res.PSNR.Min,
 		c.verdictColor(psnrV.Verdict), psnrV.Verdict, c.reset, psnrV.Meaning)
 
-	fmt.Printf("SSIM  mean=%.4f  min=%.4f  %s[%s]%s  %s\n",
+	fmt.Fprintf(out, "SSIM  mean=%.4f  min=%.4f  %s[%s]%s  %s\n",
 		res.SSIM.Mean, res.SSIM.Min,
 		c.verdictColor(ssimV.Verdict), ssimV.Verdict, c.reset, ssimV.Meaning)
 
-	fmt.Println()
-	fmt.Println("VMAF is the primary read (a perceptual model, calibrated to human ratings);")
-	fmt.Println("PSNR/SSIM are pixel-level cross-checks -- see the problem areas below for how")
-	fmt.Println("they help tell a real quality dip apart from an artifact.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "VMAF is the primary read (a perceptual model, calibrated to human ratings);")
+	fmt.Fprintln(out, "PSNR/SSIM are pixel-level cross-checks -- see the problem areas below for how")
+	fmt.Fprintln(out, "they help tell a real quality dip apart from an artifact.")
 
 	areas := encodequality.DetectProblemAreas(res.Frames, res.VMAF, res.PSNR, res.SSIM, top)
-	fmt.Println()
+	fmt.Fprintln(out)
 	if len(areas) == 0 {
-		fmt.Println("=== Problem areas: none found ===")
-		fmt.Println("No stretch of the file scored notably worse than this run's own average.")
+		fmt.Fprintln(out, "=== Problem areas: none found ===")
+		fmt.Fprintln(out, "No stretch of the file scored notably worse than this run's own average.")
 		return
 	}
-	fmt.Printf("=== Top %d problem area(s) ===\n", len(areas))
+	fmt.Fprintf(out, "=== Top %d problem area(s) ===\n", len(areas))
 	for i, a := range areas {
-		fmt.Printf("\n%d. %s - %s (frames %d-%d)\n", i+1, formatTime(a.StartTime), formatTime(a.EndTime), a.StartFrame, a.EndFrame)
-		fmt.Printf("   Triggered by: %s\n", triggerSummary(a.Triggers))
-		fmt.Printf("   In this segment: VMAF worst=%.2f, PSNR worst=%.2f dB, SSIM worst=%.4f\n",
+		fmt.Fprintf(out, "\n%d. %s - %s (frames %d-%d)\n", i+1, formatTime(a.StartTime), formatTime(a.EndTime), a.StartFrame, a.EndFrame)
+		fmt.Fprintf(out, "   Triggered by: %s\n", triggerSummary(a.Triggers))
+		fmt.Fprintf(out, "   In this segment: VMAF worst=%.2f, PSNR worst=%.2f dB, SSIM worst=%.4f\n",
 			a.VMAFWorst, a.PSNRWorst, a.SSIMWorst)
 		if a.Note != "" {
-			fmt.Printf("   %s\n", a.Note)
+			fmt.Fprintf(out, "   %s\n", a.Note)
 		}
 	}
 }
